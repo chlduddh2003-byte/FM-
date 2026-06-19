@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+import FinanceDataReader as fdr
 from fredapi import Fred
 import datetime
 import plotly.graph_objects as go
@@ -38,21 +39,20 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# API 설정 (★스트림릿 Secrets 비밀금고 연동 구조)
+# API 설정 (스트림릿 Secrets 비밀금고 연동)
 FRED_API_KEY = st.secrets["FRED_API_KEY"]
 fred = Fred(api_key=FRED_API_KEY)
 
 # 사이드바 옵션 (HTS와 수치 맞추기용 필터)
 st.sidebar.header("⚙️ 계산 방식 조정 (HTS 맞춤용)")
 ma_type = st.sidebar.selectbox("이동평균선 종류 선택", ["단순 이동평균 (SMA)", "지수 이동평균 (EMA)"])
-price_type = st.sidebar.selectbox("적용 종가 선택", ["수정 종가 (Adj Close)", "일반 종가 (Close)"])
 
 # 2. 데이터 통합 수집 엔진
 @st.cache_data(ttl=600) 
-def load_all_market_data(p_type):
-    tickers = {'^KS11': 'KOSPI', '^IXIC': 'NASDAQ', '^GSPC': 'S_P500', '^RUT': 'RUSSELL2000', '^VIX': 'VIX'}
+def load_all_market_data():
+    # 미장 및 변동성 지수는 야후 파이낸스 사용
+    tickers = {'^IXIC': 'NASDAQ', '^GSPC': 'S_P500', '^RUT': 'RUSSELL2000', '^VIX': 'VIX'}
     df_market = pd.DataFrame()
-    target_col = 'Adj Close' if p_type == "수정 종가 (Adj Close)" else 'Close'
     
     for ticker, name in tickers.items():
         try:
@@ -60,20 +60,24 @@ def load_all_market_data(p_type):
             if not raw.empty:
                 if isinstance(raw.columns, pd.MultiIndex):
                     raw.columns = [col[0] for col in raw.columns]
-                
-                if target_col in raw.columns:
-                    df_market[name] = raw[target_col]
-                elif 'Close' in raw.columns:
-                    df_market[name] = raw['Close']
+                df_market[name] = raw['Close']
         except Exception as e:
             st.error(f"{name} 수집 중 에러 발생: {e}")
+            
+    # ★ 코스피는 한국거래소 데이터셋(FinanceDataReader)으로 정확하게 수집
+    try:
+        kospi_raw = fdr.DataReader('KS11', datetime.datetime.now() - datetime.timedelta(days=730))
+        if not kospi_raw.empty:
+            df_market['KOSPI'] = kospi_raw['Close']
+    except Exception as e:
+        st.error(f"코스피 수집 중 에러 발생: {e}")
                 
     df_market = df_market.ffill().dropna()
     return df_market
 
 try:
     with st.spinner('데이터를 실시간으로 동기화 중입니다...'):
-        df_m = load_all_market_data(price_type)
+        df_m = load_all_market_data()
         
         # FRED 데이터 수집
         us_10y = float(fred.get_series('DGS10').dropna().iloc[-1])
@@ -81,6 +85,7 @@ try:
         core_cpi_yoy = float(((core_cpi_series.iloc[-1] - core_cpi_series.iloc[-13]) / core_cpi_series.iloc[-13]) * 100)
         sticky_cpi = float(fred.get_series('CORESTICKM159SFRBATL').dropna().iloc[-1])
 
+    # 이동평균선 계산
     if ma_type == "단순 이동평균 (SMA)":
         df_m['KOSPI_MA50'] = df_m['KOSPI'].rolling(window=50).mean()
     else:
@@ -90,12 +95,13 @@ try:
     df_m = df_m.dropna()
 
     latest_date = df_m.index[-1].strftime('%Y-%m-%d')
+    current_kospi = float(df_m['KOSPI'].iloc[-1])
     current_disparity = float(df_m['KOSPI_Disparity'].iloc[-1])
     current_vix = float(df_m['VIX'].iloc[-1])
 
     # 3. 메인 대시보드 UI 레이아웃
     st.title("🚨 글로벌 매크로 및 시장 위험 경보 시스템")
-    st.caption(f"현재 동기화된 최신 영업일: {latest_date} | 적용 필터: {ma_type} / {price_type}")
+    st.caption(f"현재 동기화된 최신 영업일: {latest_date} | 적용 필터: {ma_type}")
 
     st.markdown("""
     <div class="memo-box">
@@ -108,15 +114,15 @@ try:
     col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
-        is_danger = current_disparity >= 130
-        card_class = "status-card status-danger" if is_danger else ("status-card status-info" if current_disparity <= 105 else "status-card")
-        status_lbl = "🚨 조정 급격 상승 (일부 현금화)" if is_danger else ("🛒 분할 매수 구간" if current_disparity <= 105 else "정상 범위")
+        is_danger = current_disparity >= 106  # 통상 코스피는 105~106% 이상이면 단기 과열권입니다.
+        card_class = "status-card status-danger" if is_danger else ("status-card status-info" if current_disparity <= 95 else "status-card")
+        status_lbl = "🚨 과열 구간 (일부 현금화)" if is_danger else ("🛒 분할 매수 구간" if current_disparity <= 95 else "정상 범위")
         st.markdown(f"""
         <div class="{card_class}">
-            <div style="font-size:14px; color:#a0aec0; font-weight:bold;">1. 코스피 이격도</div>
+            <div style="font-size:14px; color:#a0aec0; font-weight:bold;">1. 코스피 이격도 ({current_kospi:,.1f})</div>
             <div style="font-size:32px; font-weight:800; color:white; margin:10px 0;">{current_disparity:.1f}%</div>
             <div style="font-size:12px; font-weight:bold; color:#cbd5e0;">{status_lbl}</div>
-            <div style="font-size:11px; color:#718096; margin-top:5px;">기준선: 130% 이상 위험</div>
+            <div style="font-size:11px; color:#718096; margin-top:5px;">기준선: 106% 이상 과열 / 95% 이하 과매도</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -175,7 +181,7 @@ try:
     # 데이터 정합성 검증 표
     st.markdown("### 🔍 실시간 데이터 정합성 검증 표")
     df_debug = df_m[['KOSPI', 'KOSPI_MA50', 'KOSPI_Disparity']].tail(4).copy()
-    df_debug.columns = ['코스피 종가(야후)', '앱이 계산한 50일선', '최종 이격도(%)']
+    df_debug.columns = ['코스피 종가(KRX)', '앱이 계산한 50일선', '최종 이격도(%)']
     st.dataframe(df_debug.style.format("{:,.2f}"))
 
     # 5. 시장 확산성 다이버전스 차트
