@@ -46,21 +46,24 @@ except Exception:
     st.error("API Key를 찾을 수 없습니다. .streamlit/secrets.toml 파일을 확인해주세요.")
     st.stop()
 
-# 사이드바 옵션 (HTS와 수치 맞추기용 필터)
+# 사이드바 옵션
 st.sidebar.header("⚙️ 계산 방식 조정 (HTS 맞춤용)")
 ma_type = st.sidebar.selectbox("이동평균선 종류 선택", ["단순 이동평균 (SMA)", "지수 이동평균 (EMA)"])
 price_type = st.sidebar.selectbox("적용 종가 선택", ["수정 종가 (Adj Close)", "일반 종가 (Close)"])
 
-# 2. 데이터 통합 수집 엔진 (기존 코드와 동일)
-@st.cache_data(ttl=600) 
+# 2. 데이터 통합 수집 엔진 (안정화 버전)
+@st.cache_data(ttl=3600) 
 def load_all_market_data(p_type):
     tickers = {'^KS11': 'KOSPI', '^IXIC': 'NASDAQ', '^GSPC': 'S_P500', '^RUT': 'RUSSELL2000', '^VIX': 'VIX'}
     df_market = pd.DataFrame()
     target_col = 'Adj Close' if p_type == "수정 종가 (Adj Close)" else 'Close'
     
+    # 명확한 기간 설정
+    start_date = (datetime.datetime.now() - datetime.timedelta(days=730)).strftime('%Y-%m-%d')
+    
     for ticker, name in tickers.items():
         try:
-            raw = yf.download(ticker, period="2y", progress=False)
+            raw = yf.download(ticker, start=start_date, progress=False)
             if not raw.empty:
                 if isinstance(raw.columns, pd.MultiIndex):
                     raw.columns = [col[0] for col in raw.columns]
@@ -72,7 +75,8 @@ def load_all_market_data(p_type):
         except Exception as e:
             st.error(f"{name} 수집 중 에러 발생: {e}")
                 
-    df_market = df_market.ffill().dropna()
+    # 정렬 및 결측치 제거
+    df_market = df_market.sort_index().ffill().dropna()
     return df_market
 
 # 데이터 호출 및 매크로 지표 결합
@@ -86,7 +90,7 @@ try:
         core_cpi_yoy = float(((core_cpi_series.iloc[-1] - core_cpi_series.iloc[-13]) / core_cpi_series.iloc[-13]) * 100)
         sticky_cpi = float(fred.get_series('CORESTICKM159SFRBATL').dropna().iloc[-1])
 
-    # 50일선 이동평균 계산 (선택 옵션 반영)
+    # 50일선 이동평균 계산
     if ma_type == "단순 이동평균 (SMA)":
         df_m['KOSPI_MA50'] = df_m['KOSPI'].rolling(window=50).mean()
     else:
@@ -100,7 +104,7 @@ try:
     current_disparity = float(df_m['KOSPI_Disparity'].iloc[-1])
     current_vix = float(df_m['VIX'].iloc[-1])
 
-    # 3. 메인 대시보드 UI 레이아웃
+    # 3. 메인 대시보드 UI
     st.title("🚨 글로벌 매크로 및 시장 위험 경보 시스템")
     st.caption(f"현재 동기화된 최신 영업일: {latest_date} | 적용 필터: {ma_type} / {price_type}")
 
@@ -179,11 +183,13 @@ try:
         </div>
         """, unsafe_allow_html=True)
 
+    # 정합성 검증 표
     st.markdown("### 🔍 실시간 데이터 정합성 검증 표")
     df_debug = df_m[['KOSPI', 'KOSPI_MA50', 'KOSPI_Disparity']].tail(4).copy()
     df_debug.columns = ['코스피 종가(야후)', '앱이 계산한 50일선', '최종 이격도(%)']
     st.dataframe(df_debug.style.format("{:,.2f}"))
 
+    # 차트
     st.markdown("---")
     st.subheader("🔄 시장 확산성 다이버전스 체크 (끝물 필터링)")
     df_recent = df_m.tail(60).copy()
