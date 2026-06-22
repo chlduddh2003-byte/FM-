@@ -51,10 +51,15 @@ st.sidebar.header("⚙️ 계산 방식 조정 (HTS 맞춤용)")
 ma_type = st.sidebar.selectbox("이동평균선 종류 선택", ["단순 이동평균 (SMA)", "지수 이동평균 (EMA)"])
 price_type = st.sidebar.selectbox("적용 종가 선택", ["수정 종가 (Adj Close)", "일반 종가 (Close)"])
 
-# 2. 데이터 통합 수집 엔진 (기존 코드와 동일)
+# 2. 데이터 통합 수집 엔진
 @st.cache_data(ttl=600) 
 def load_all_market_data(p_type):
-    tickers = {'^KS11': 'KOSPI', '^IXIC': 'NASDAQ', '^GSPC': 'S_P500', '^RUT': 'RUSSELL2000', '^VIX': 'VIX'}
+    # 삼성전자, 하이닉스 티커 추가
+    tickers = {
+        '^KS11': 'KOSPI', '^IXIC': 'NASDAQ', '^GSPC': 'S_P500', 
+        '^RUT': 'RUSSELL2000', '^VIX': 'VIX',
+        '005930.KS': 'Samsung', '000660.KS': 'Hynix'
+    }
     df_market = pd.DataFrame()
     target_col = 'Adj Close' if p_type == "수정 종가 (Adj Close)" else 'Close'
     
@@ -86,19 +91,24 @@ try:
         core_cpi_yoy = float(((core_cpi_series.iloc[-1] - core_cpi_series.iloc[-13]) / core_cpi_series.iloc[-13]) * 100)
         sticky_cpi = float(fred.get_series('CORESTICKM159SFRBATL').dropna().iloc[-1])
 
-    # 50일선 이동평균 계산 (선택 옵션 반영)
-    if ma_type == "단순 이동평균 (SMA)":
-        df_m['KOSPI_MA50'] = df_m['KOSPI'].rolling(window=50).mean()
-    else:
-        df_m['KOSPI_MA50'] = df_m['KOSPI'].ewm(span=50, adjust=False).mean()
-
-    df_m['KOSPI_Disparity'] = (df_m['KOSPI'] / df_m['KOSPI_MA50']) * 100
-    df_m = df_m.dropna()
+    # 50일선 이동평균 및 이격도 계산 (KOSPI, Samsung, Hynix)
+    target_assets = ['KOSPI', 'Samsung', 'Hynix']
+    for asset in target_assets:
+        if ma_type == "단순 이동평균 (SMA)":
+            df_m[f'{asset}_MA50'] = df_m[asset].rolling(window=50).mean()
+        else:
+            df_m[f'{asset}_MA50'] = df_m[asset].ewm(span=50, adjust=False).mean()
+        
+        df_m[f'{asset}_Disparity'] = (df_m[asset] / df_m[f'{asset}_MA50']) * 100
 
     # 최신 값 세팅
     latest_date = df_m.index[-1].strftime('%Y-%m-%d')
     current_disparity = float(df_m['KOSPI_Disparity'].iloc[-1])
     current_vix = float(df_m['VIX'].iloc[-1])
+    
+    # 삼성/하이닉스 최신 이격도
+    samsung_disparity = float(df_m['Samsung_Disparity'].iloc[-1])
+    hynix_disparity = float(df_m['Hynix_Disparity'].iloc[-1])
 
     # 3. 메인 대시보드 UI 레이아웃
     st.title("🚨 글로벌 매크로 및 시장 위험 경보 시스템")
@@ -179,9 +189,39 @@ try:
         </div>
         """, unsafe_allow_html=True)
 
+    # 삼성/하이닉스 섹션 추가
+    st.subheader("📌 개별 종목 위험 신호 (삼성전자/SK하이닉스)")
+    col_s1, col_s2 = st.columns(2)
+
+    with col_s1:
+        is_samsung_danger = samsung_disparity >= 150
+        s_class = "status-card status-danger" if is_samsung_danger else "status-card"
+        s_label = "🚨 150% 돌파! 과열 주의" if is_samsung_danger else "정상 범위"
+        st.markdown(f"""
+        <div class="{s_class}">
+            <div style="font-size:14px; color:#a0aec0; font-weight:bold;">삼성전자 이격도</div>
+            <div style="font-size:32px; font-weight:800; color:white; margin:10px 0;">{samsung_disparity:.1f}%</div>
+            <div style="font-size:12px; font-weight:bold; color:#cbd5e0;">{s_label}</div>
+            <div style="font-size:11px; color:#718096; margin-top:5px;">기준선: 150% 이상 위험</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col_s2:
+        is_hynix_danger = hynix_disparity >= 170
+        h_class = "status-card status-danger" if is_hynix_danger else "status-card"
+        h_label = "🚨 170% 돌파! 과열 주의" if is_hynix_danger else "정상 범위"
+        st.markdown(f"""
+        <div class="{h_class}">
+            <div style="font-size:14px; color:#a0aec0; font-weight:bold;">SK하이닉스 이격도</div>
+            <div style="font-size:32px; font-weight:800; color:white; margin:10px 0;">{hynix_disparity:.1f}%</div>
+            <div style="font-size:12px; font-weight:bold; color:#cbd5e0;">{h_label}</div>
+            <div style="font-size:11px; color:#718096; margin-top:5px;">기준선: 170% 이상 위험</div>
+        </div>
+        """, unsafe_allow_html=True)
+
     st.markdown("### 🔍 실시간 데이터 정합성 검증 표")
-    df_debug = df_m[['KOSPI', 'KOSPI_MA50', 'KOSPI_Disparity']].tail(4).copy()
-    df_debug.columns = ['코스피 종가(야후)', '앱이 계산한 50일선', '최종 이격도(%)']
+    df_debug = df_m[['KOSPI', 'KOSPI_MA50', 'KOSPI_Disparity', 'Samsung_Disparity', 'Hynix_Disparity']].tail(4).copy()
+    df_debug.columns = ['코스피 종가', '코스피 50일선', '코스피 이격도(%)', '삼성 이격도(%)', '하이닉스 이격도(%)']
     st.dataframe(df_debug.style.format("{:,.2f}"))
 
     st.markdown("---")
