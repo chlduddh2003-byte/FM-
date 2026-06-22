@@ -207,15 +207,15 @@ try:
         """, unsafe_allow_html=True)
 
     with col_s2:
-        is_hynix_danger = hynix_disparity >= 170
+        is_hynix_danger = hynix_disparity >= 175
         h_class = "status-card status-danger" if is_hynix_danger else "status-card"
-        h_label = "🚨 170% 돌파! 과열 주의" if is_hynix_danger else "정상 범위"
+        h_label = "🚨 175% 돌파! 과열 주의" if is_hynix_danger else "정상 범위"
         st.markdown(f"""
         <div class="{h_class}">
             <div style="font-size:14px; color:#a0aec0; font-weight:bold;">SK하이닉스 이격도</div>
             <div style="font-size:32px; font-weight:800; color:white; margin:10px 0;">{hynix_disparity:.1f}%</div>
             <div style="font-size:12px; font-weight:bold; color:#cbd5e0;">{h_label}</div>
-            <div style="font-size:11px; color:#718096; margin-top:5px;">기준선: 170% 이상 위험</div>
+            <div style="font-size:11px; color:#718096; margin-top:5px;">기준선: 175% 이상 위험</div>
         </div>
         """, unsafe_allow_html=True)
 
